@@ -4,7 +4,7 @@
 //! protocol, scaled down to a handful of hand-built examples for now.
 
 use incremental_skolem::term::{ mk_and, mk_exists, mk_forall, mk_pred, Interner, Term };
-use incremental_skolem::z3_bridge::{ SkolemizingSolver };
+use incremental_skolem::z3_bridge::{ default_context, SkolemizingSolver };
 use std::rc::Rc;
 use z3::SatResult;
 

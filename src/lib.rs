@@ -2,6 +2,9 @@ pub mod term;
 pub mod skolem_table;
 pub mod skolemize;
 pub mod z3_bridge;
+pub mod sexpr;
+pub mod nnf;
+pub mod smt2;
 
 pub use skolem_table::SkolemTable;
 pub use skolemize::Skolemizer;
@@ -114,21 +117,110 @@ mod tests {
         );
     }
 
-    /// gc_scope should be safe to call (never breaks correctness) and
-    /// should measurably shrink the table.
+    /// The new eviction mechanism: an entry that goes idle for longer
+    /// than the configured window becomes eligible for eviction, and its
+    /// physical slot gets recycled (freelist reuse -- no growth) for the
+    /// next distinct formula, without ever crashing or corrupting state.
     #[test]
-    fn gc_scope_reclaims_memory_without_crashing() {
+    fn evict_cold_reclaims_and_recycles_slot() {
         let mut interner = Interner::new();
-        let mut table = SkolemTable::new("sk");
-        table.push();
-        let formula = build_simple_formula(&mut interner);
+        // small window so the test doesn't need thousands of iterations
+        let mut table = SkolemTable::with_capacity("sk", 4096, 5);
+
+        let formula_a = build_simple_formula(&mut interner);
         {
             let mut sk = Skolemizer::new(&mut interner, &mut table);
-            sk.skolemize(&formula, &[]);
+            sk.skolemize(&formula_a, &[]);
         }
         assert_eq!(table.len(), 1);
-        table.gc_scope(1);
-        assert_eq!(table.len(), 0, "gc_scope should purge entries introduced at that scope");
+        assert_eq!(table.slot_count(), 1);
+
+        // advance the epoch clock well past the idle window without
+        // touching formula_a's entry
+        for _ in 0..10 {
+            table.push();
+            table.pop(1);
+        }
+
+        let freed = table.evict_cold();
+        assert_eq!(freed, 1);
+        assert_eq!(table.len(), 0);
+        assert_eq!(table.slot_count(), 1, "slot should be freed, not deallocated");
+
+        // a DIFFERENT formula should recycle the freed slot rather than
+        // growing the slot array
+        let x: u32 = 10;
+        let y: u32 = 11;
+        let p2 = mk_pred(
+            &mut interner,
+            "Q",
+            vec![Rc::new(Term::Var(x)), Rc::new(Term::Var(y))],
+            false
+        );
+        let exists_y2 = mk_exists(&mut interner, y, p2);
+        let formula_b = mk_forall(&mut interner, x, exists_y2);
+        {
+            let mut sk = Skolemizer::new(&mut interner, &mut table);
+            sk.skolemize(&formula_b, &[]);
+        }
+        assert_eq!(table.slot_count(), 1, "freed slot should have been recycled, not grown");
+        assert_eq!(
+            table.fresh_generations,
+            2,
+            "the recycled slot's formula is genuinely new -> fresh symbol"
+        );
+    }
+
+    /// Soundness-adjacent regression: even after a slot is evicted and
+    /// recycled for a different formula, the ORIGINAL formula's next
+    /// lookup must mint a brand-new, distinct symbol name -- never reuse
+    /// the name that's now occupied by the unrelated recycled formula.
+    #[test]
+    fn evicted_then_recreated_entry_gets_a_fresh_never_reused_name() {
+        let mut interner = Interner::new();
+        let mut table = SkolemTable::with_capacity("sk", 4096, 3);
+
+        let formula_a = build_simple_formula(&mut interner);
+        let original_symbol = {
+            let mut sk = Skolemizer::new(&mut interner, &mut table);
+            let result = sk.skolemize(&formula_a, &[]);
+            extract_skolem_symbol(&result)
+        };
+
+        for _ in 0..10 {
+            table.push();
+            table.pop(1);
+        }
+        table.evict_cold();
+
+        // re-assert the SAME formula after eviction: must mint a fresh
+        // name, not silently collide with anything
+        let recreated_symbol = {
+            let mut sk = Skolemizer::new(&mut interner, &mut table);
+            let result = sk.skolemize(&formula_a, &[]);
+            extract_skolem_symbol(&result)
+        };
+
+        assert_ne!(
+            original_symbol,
+            recreated_symbol,
+            "names must never be reused, even across eviction"
+        );
+    }
+
+    fn extract_skolem_symbol(f: &Rc<Formula>) -> String {
+        match &**f {
+            Formula::ForAll(_, body) =>
+                match &**body {
+                    Formula::Pred { args, .. } =>
+                        match &*args[1] {
+                            Term::Func(sym, _) => sym.clone(),
+                            other => panic!("expected Skolem function term, got {:?}", other),
+                        }
+                    other => panic!("expected Pred, got {:?}", other),
+                }
+            other => panic!("expected ForAll, got {:?}", other),
+        }
     }
 
     /// Baseline comparison: full re-skolemization with a FRESH table every

@@ -31,6 +31,8 @@ pub enum Formula {
     Or(Rc<Formula>, Rc<Formula>),
     ForAll(VarId, Rc<Formula>),
     Exists(VarId, Rc<Formula>),
+    True,
+    False,
 }
 
 /// Hash-consing interner: structurally identical formulas collapse to the
@@ -86,6 +88,12 @@ pub fn mk_forall(interner: &mut Interner, v: VarId, body: Rc<Formula>) -> Rc<For
 }
 pub fn mk_exists(interner: &mut Interner, v: VarId, body: Rc<Formula>) -> Rc<Formula> {
     interner.intern(Formula::Exists(v, body))
+}
+pub fn mk_true(interner: &mut Interner) -> Rc<Formula> {
+    interner.intern(Formula::True)
+}
+pub fn mk_false(interner: &mut Interner) -> Rc<Formula> {
+    interner.intern(Formula::False)
 }
 
 pub fn substitute_term(t: &Rc<Term>, var: VarId, replacement: &Rc<Term>) -> Rc<Term> {
@@ -145,5 +153,6 @@ pub fn substitute(
                 interner.intern(Formula::Exists(*v, nb))
             }
         }
+        Formula::True | Formula::False => f.clone(),
     }
 }

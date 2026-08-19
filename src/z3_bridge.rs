@@ -23,7 +23,7 @@ use crate::term::{ Formula, Interner, Term, VarId };
 use std::collections::HashMap;
 use std::rc::Rc;
 use z3::ast::{ Ast, Bool, Dynamic };
-use z3::{ FuncDecl, SatResult, Solver, Sort, Symbol };
+use z3::{ Config, Context, FuncDecl, SatResult, Solver, Sort, Symbol };
 
 struct DeclRegistry {
     u_sort: Sort,
@@ -32,7 +32,7 @@ struct DeclRegistry {
     fresh_var_counter: usize,
 }
 
-impl DeclRegistry {
+impl<'ctx> DeclRegistry {
     fn new() -> Self {
         DeclRegistry {
             u_sort: Sort::uninterpreted(Symbol::String("U".to_string())),
@@ -106,13 +106,24 @@ fn translate_term<'ctx>(
     }
 }
 
-fn translate_formula(
+fn translate_formula<'ctx>(
     decls: &mut DeclRegistry,
     bound: &HashMap<VarId, Dynamic>,
     f: &Formula
 ) -> Result<Bool, BridgeError> {
     match f {
         Formula::Pred { name, args, negated } => {
+            if name == "=" && args.len() == 2 {
+                // Special-cased to real Z3 equality (reflexive,
+                // congruence-aware) rather than an uninterpreted
+                // predicate -- treating "=" as an ordinary predicate
+                // symbol would silently drop those semantics and could
+                // flip SAT/UNSAT verdicts on any benchmark that uses it.
+                let l = translate_term(decls, bound, &args[0])?;
+                let r = translate_term(decls, bound, &args[1])?;
+                let eq = l.eq(&r);
+                return Ok(if *negated { eq.not() } else { eq });
+            }
             let mut translated_args = Vec::with_capacity(args.len());
             for a in args {
                 translated_args.push(translate_term(decls, bound, a)?);
@@ -146,6 +157,8 @@ fn translate_formula(
             Ok(quantified)
         }
         Formula::Exists(_, _) => Err(BridgeError::UnskolemizedExistential),
+        Formula::True => Ok(Bool::from_bool(true)),
+        Formula::False => Ok(Bool::from_bool(false)),
     }
 }
 
@@ -161,7 +174,7 @@ pub struct SkolemizingSolver {
     decls: DeclRegistry,
 }
 
-impl<'ctx> SkolemizingSolver {
+impl SkolemizingSolver {
     pub fn new() -> Self {
         SkolemizingSolver {
             solver: Solver::new(),
@@ -188,9 +201,8 @@ impl<'ctx> SkolemizingSolver {
     }
 
     /// Pop `n` levels. Note: per the SkolemTable design, this does NOT
-    /// discard cached Skolem symbols -- only Z3's own assertion stack is
-    /// rolled back. Call `self.table_mut().gc_scope(..)` explicitly if
-    /// memory reclamation in the Skolem cache is needed.
+    /// discard cached Skolem symbols -- reclamation is automatic and
+    /// epoch-idle-based (see `skolem_table.rs`), not tied to scope depth.
     pub fn pop(&mut self, n: u32) {
         self.solver.pop(n);
         self.table.pop(n as usize);
@@ -209,4 +221,11 @@ impl<'ctx> SkolemizingSolver {
     pub fn table_mut(&mut self) -> &mut SkolemTable {
         &mut self.table
     }
+}
+
+/// Convenience constructor for a default-configured Z3 `Context`, since
+/// callers need to create and own one before constructing a
+/// `SkolemizingSolver`.
+pub fn default_context() -> Context {
+    Context::thread_local()
 }

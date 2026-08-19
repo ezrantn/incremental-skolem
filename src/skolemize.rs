@@ -58,6 +58,7 @@ impl<'a> Skolemizer<'a> {
                 let substituted = substitute(self.interner, body, *v, &skolem_term);
                 self.skolemize(&substituted, deps)
             }
+            Formula::True | Formula::False => f.clone(),
         }
     }
 }

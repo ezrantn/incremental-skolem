@@ -23,7 +23,7 @@ use crate::term::{ Formula, Interner, Term, VarId };
 use std::collections::HashMap;
 use std::rc::Rc;
 use z3::ast::{ Ast, Bool, Dynamic };
-use z3::{ Config, Context, FuncDecl, SatResult, Solver, Sort, Symbol };
+use z3::{ Context, FuncDecl, SatResult, Solver, Sort, Symbol };
 
 struct DeclRegistry {
     u_sort: Sort,
